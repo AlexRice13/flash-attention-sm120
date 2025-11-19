@@ -539,9 +539,26 @@ if not SKIP_CUDA_BUILD:
                         for hdim, dtype, softcap in itertools.product(HEAD_DIMENSIONS_BWD, DTYPE_BWD, SOFTCAP)]
     sources_bwd_sm90 = [f"instantiations/flash_bwd_hdim{hdim}_{dtype}{softcap}_sm90.cu"
                         for hdim, dtype, softcap in itertools.product(HEAD_DIMENSIONS_BWD, DTYPE_BWD, SOFTCAP_ALL)]
+    
+    # SM120 (Blackwell) sources - same pattern as SM90
+    sources_fwd_sm120 = [f"instantiations/flash_fwd_hdim{hdim}_{dtype}{paged}{split}{softcap}{packgqa}_sm120.cu"
+                         for hdim, dtype, split, paged, softcap, packgqa in itertools.product(HEAD_DIMENSIONS_FWD, DTYPE_FWD_SM90, SPLIT, PAGEDKV, SOFTCAP, PACKGQA)
+                         if not (packgqa and (paged or split))]
+    if not DISABLE_HDIMDIFF64:
+        sources_fwd_sm120 += [f"instantiations/flash_fwd_hdim{hdim}_{dtype}{paged}{split}{softcap}{packgqa}_sm120.cu"
+                              for hdim, dtype, split, paged, softcap, packgqa in itertools.product(HEAD_DIMENSIONS_DIFF64_FWD, HALF_DTYPE_FWD_SM90, SPLIT, PAGEDKV, SOFTCAP, PACKGQA)
+                              if not (packgqa and (paged or split))]
+    if not DISABLE_HDIMDIFF192:
+        sources_fwd_sm120 += [f"instantiations/flash_fwd_hdim{hdim}_{dtype}{paged}{split}{softcap}{packgqa}_sm120.cu"
+                              for hdim, dtype, split, paged, softcap, packgqa in itertools.product(HEAD_DIMENSIONS_DIFF192_FWD, DTYPE_FWD_SM90, SPLIT, PAGEDKV, SOFTCAP, PACKGQA)
+                              if not (packgqa and (paged or split))]
+    sources_bwd_sm120 = [f"instantiations/flash_bwd_hdim{hdim}_{dtype}{softcap}_sm120.cu"
+                         for hdim, dtype, softcap in itertools.product(HEAD_DIMENSIONS_BWD, DTYPE_BWD, SOFTCAP_ALL)]
+    
     if DISABLE_BACKWARD:
         sources_bwd_sm90 = []
         sources_bwd_sm80 = []
+        sources_bwd_sm120 = []
     
     # Choose between flash_api.cpp and flash_api_stable.cpp based on torch version
     torch_version = parse(torch.__version__)
@@ -556,8 +573,8 @@ if not SKIP_CUDA_BUILD:
 
     sources = (
         [flash_api_source]
-        + (sources_fwd_sm80 if not DISABLE_SM8x else []) + sources_fwd_sm90
-        + (sources_bwd_sm80 if not DISABLE_SM8x else []) + sources_bwd_sm90
+        + (sources_fwd_sm80 if not DISABLE_SM8x else []) + sources_fwd_sm90 + sources_fwd_sm120
+        + (sources_bwd_sm80 if not DISABLE_SM8x else []) + sources_bwd_sm90 + sources_bwd_sm120
     )
     if not DISABLE_SPLIT:
         sources += ["flash_fwd_combine.cu"]
