@@ -33,6 +33,7 @@ using namespace cute;
 // architectures that will never use the kernel. The purpose of this is to
 // reduce the size of the compiled binary.
 // Adapted from https://github.com/vllm-project/vllm/blob/4d29e91be84d27ca313d657eee92c067439a4c23/csrc/quantization/cutlass_w8a8/scaled_mm_c2x.cuh#L55
+// Note: SM120 (Blackwell) is enabled for sm90_or_later as it shares similar architectural features with Hopper
 template <typename Kernel>
 struct enable_sm90_or_later : Kernel {
     template <typename... Args>
@@ -48,6 +49,17 @@ struct enable_sm80_to_sm89 : Kernel {
     template <typename... Args>
     CUTLASS_DEVICE void operator()(Args&&... args) {
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800) && (__CUDA_ARCH__ <= 890)
+        Kernel::operator()(std::forward<Args>(args)...);
+#endif
+    }
+};
+
+// Wrapper specifically for SM120 (Blackwell) kernels
+template <typename Kernel>
+struct enable_sm120_or_later : Kernel {
+    template <typename... Args>
+    CUTLASS_DEVICE void operator()(Args&&... args) {
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1200)
         Kernel::operator()(std::forward<Args>(args)...);
 #endif
     }
