@@ -16,6 +16,7 @@
 #include "flash.h"
 #include "tile_size.h"
 #include "tile_scheduler.hpp"
+#include "flash_fwd_kernel_sm120.h"
 #include "flash_fwd_kernel_sm90.h"
 #include "flash_fwd_kernel_sm80.h"
 #include "mainloop_fwd_sm90_tma_gmma_ws.hpp"
@@ -33,10 +34,14 @@ void run_flash_fwd(Flash_fwd_params &params, cudaStream_t stream) {
     static_assert(!(AppendKV && !Varlen), "AppendKV requires Varlen");
     static constexpr bool Is_FP8 = cute::is_same_v<Element, cutlass::float_e4m3_t> || cute::is_same_v<Element, cutlass::float_e5m2_t>;
     static constexpr bool FP8_TransposeV = Is_FP8 && !V_colmajor;
+    // SM120 (Blackwell) uses Sm90 ArchTag as it shares the same ISA features (TMA, GMMA, etc.)
     using ArchTag = std::conditional_t<Arch >= 90, cutlass::arch::Sm90, cutlass::arch::Sm80>;
 
     // Can't use structured binding since it's not compatible with constexpr
-    static constexpr std::tuple<int, int, bool, bool> kBlockMN_RS_IntraWGOverlap = tile_size_fwd_sm90(kHeadDim, kHeadDimV, Is_causal, Is_local, sizeof(Element) /*element_size*/, V_colmajor, PagedKVNonTMA, Has_softcap);
+    // SM120 (Blackwell) uses dedicated tile_size_fwd_sm120 tuned for smaller shared memory
+    static constexpr std::tuple<int, int, bool, bool> kBlockMN_RS_IntraWGOverlap_sm120 = tile_size_fwd_sm120(kHeadDim, kHeadDimV, Is_causal, Is_local, sizeof(Element) /*element_size*/, V_colmajor, PagedKVNonTMA, Has_softcap);
+    static constexpr std::tuple<int, int, bool, bool> kBlockMN_RS_IntraWGOverlap_sm90 = tile_size_fwd_sm90(kHeadDim, kHeadDimV, Is_causal, Is_local, sizeof(Element) /*element_size*/, V_colmajor, PagedKVNonTMA, Has_softcap);
+    static constexpr std::tuple<int, int, bool, bool> kBlockMN_RS_IntraWGOverlap = Arch >= 120 ? kBlockMN_RS_IntraWGOverlap_sm120 : kBlockMN_RS_IntraWGOverlap_sm90;
     static constexpr std::tuple<int, int, int, int, bool> kBlockMN_kNWarps_Stages_RS = tile_size_fwd_sm8x(Arch == 86 || Arch == 89, kHeadDim, kHeadDimV, Is_causal, Is_local, sizeof(Element) /*element_size*/, PagedKVNonTMA, Varlen && Split, Has_softcap, AppendKV);
     static constexpr int kBlockM = Arch >= 90 ? std::get<0>(kBlockMN_RS_IntraWGOverlap) : std::get<0>(kBlockMN_kNWarps_Stages_RS);
     static constexpr int kBlockN = Arch >= 90 ? std::get<1>(kBlockMN_RS_IntraWGOverlap) : std::get<1>(kBlockMN_kNWarps_Stages_RS);
@@ -73,10 +78,15 @@ void run_flash_fwd(Flash_fwd_params &params, cudaStream_t stream) {
     // On Sm80, noncausal persistent seems a bit slower.
     static constexpr bool UsePersistentScheduler = Arch >= 90 ? !(Split && !Varlen) : ((Is_causal && !Varlen) || (Varlen && Split));
     using Scheduler = std::conditional_t<!UsePersistentScheduler, SchedulerSingleTile, SchedulerPersistent>;
+    // SM120 (Blackwell) uses dedicated kernel with Blackwell-specific tuning
     using AttnKernel = std::conditional_t<
-        Arch >= 90,
-        flash::enable_sm90_or_later<flash::FlashAttnFwdSm90<CollectiveMainloop, CollectiveEpilogue, Scheduler>>,
-        flash::enable_sm80_to_sm89<flash::FlashAttnFwdSm80<CollectiveMainloop, CollectiveEpilogue, Scheduler>>
+        Arch >= 120,
+        flash::enable_sm120_or_later<flash::FlashAttnFwdSm120<CollectiveMainloop, CollectiveEpilogue, Scheduler>>,
+        std::conditional_t<
+            Arch >= 90,
+            flash::enable_sm90_or_later<flash::FlashAttnFwdSm90<CollectiveMainloop, CollectiveEpilogue, Scheduler>>,
+            flash::enable_sm80_to_sm89<flash::FlashAttnFwdSm80<CollectiveMainloop, CollectiveEpilogue, Scheduler>>
+        >
     >;
 
     bool const is_varlen_q = params.cu_seqlens_q;

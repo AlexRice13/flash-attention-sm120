@@ -28,7 +28,7 @@ DTYPE_MAP_BWD = {
     "bf16": "cutlass::bfloat16_t",
 }
 
-SM = [80, 90]  # Sm kernels support up to
+SM = [80, 90, 120]  # Sm kernels support up to (80=Ampere, 90=Hopper, 120=Blackwell)
 HEAD_DIMENSIONS = [64, 96, 128, 192, 256]
 PAGEDKV = [False, True]
 SPLIT = [False, True]
@@ -36,6 +36,13 @@ SOFTCAP = [False, True]
 PACKGQA = [False, True]
 
 KERNEL_IMPL_TEMPLATE_FWD_SM90 = """#include "flash_fwd_launch_template.h"
+
+#ifndef FLASHATTENTION_DISABLE_HDIM{HEAD_DIM}
+template void run_mha_fwd_<{ARCH}, {DTYPE}, {HEAD_DIM}, {HEAD_DIM_V}, {SPLIT}, {PAGEDKV}, {SOFTCAP}, {PACKGQA}>(Flash_fwd_params &params, cudaStream_t stream);
+#endif
+"""
+
+KERNEL_IMPL_TEMPLATE_FWD_SM120 = """#include "flash_fwd_launch_template.h"
 
 #ifndef FLASHATTENTION_DISABLE_HDIM{HEAD_DIM}
 template void run_mha_fwd_<{ARCH}, {DTYPE}, {HEAD_DIM}, {HEAD_DIM_V}, {SPLIT}, {PAGEDKV}, {SOFTCAP}, {PACKGQA}>(Flash_fwd_params &params, cudaStream_t stream);
@@ -53,6 +60,16 @@ template void run_mha_fwd_<86, {DTYPE}, {HEAD_DIM}, {HEAD_DIM_V}, {SPLIT}, {PAGE
 """
 
 KERNEL_IMPL_TEMPLATE_BWD_SM90 = """#include "flash_bwd_launch_template.h"
+
+#ifndef FLASHATTENTION_DISABLE_HDIM{HEAD_DIM}
+template<>
+void run_mha_bwd_<{ARCH}, {DTYPE}, {HEAD_DIM}, {SOFTCAP}>(Flash_bwd_params &params, cudaStream_t stream) {{
+    run_mha_bwd_hdim{HEAD_DIM}<{ARCH}, {DTYPE}, {SOFTCAP}>(params, stream);
+}}
+#endif
+"""
+
+KERNEL_IMPL_TEMPLATE_BWD_SM120 = """#include "flash_bwd_launch_template.h"
 
 #ifndef FLASHATTENTION_DISABLE_HDIM{HEAD_DIM}
 template<>
@@ -104,6 +121,15 @@ class Kernel:
                     SPLIT=str(self.split).lower(), PAGEDKV=str(self.paged_kv).lower(),
                     SOFTCAP=str(self.softcap).lower(), PACKGQA=str(packgqa).lower()
                 )
+            elif self.sm == 120:
+                # SM120 (Blackwell) - Always enable PackGQA for PagedKV or Split
+                packgqa = self.packgqa or self.paged_kv or self.split
+                return KERNEL_IMPL_TEMPLATE_FWD_SM120.format(
+                    ARCH=str(self.sm), DTYPE=DTYPE_MAP[self.dtype],
+                    HEAD_DIM=self.head_dim, HEAD_DIM_V=self.head_dim_v,
+                    SPLIT=str(self.split).lower(), PAGEDKV=str(self.paged_kv).lower(),
+                    SOFTCAP=str(self.softcap).lower(), PACKGQA=str(packgqa).lower()
+                )
             else:
                 # Always enable PackGQA for Sm8x to reduce compilation
                 return KERNEL_IMPL_TEMPLATE_FWD_SM8x.format(
@@ -114,6 +140,12 @@ class Kernel:
         elif self.direction == "bwd":
             if self.sm == 90:
                 return KERNEL_IMPL_TEMPLATE_BWD_SM90.format(
+                    ARCH=str(self.sm), DTYPE=DTYPE_MAP[self.dtype], HEAD_DIM=self.head_dim,
+                    SOFTCAP=str(self.softcap).lower()
+                )
+            elif self.sm == 120:
+                # SM120 (Blackwell) backward pass
+                return KERNEL_IMPL_TEMPLATE_BWD_SM120.format(
                     ARCH=str(self.sm), DTYPE=DTYPE_MAP[self.dtype], HEAD_DIM=self.head_dim,
                     SOFTCAP=str(self.softcap).lower()
                 )
@@ -175,7 +207,7 @@ def batch_softcap(kernels_all) -> List[KERNEL_BATCH]:
 
     # Bwd
     for dtype, head_dim, sm in itertools.product(DTYPE_MAP.keys(), HEAD_DIMENSIONS, SM):
-        if sm < 90:
+        if sm < 90:  # Only SM90 and SM120 support the new architecture
             continue
         kernels = [k for k in kernels_all if k.direction == "bwd" and k.dtype == dtype and k.head_dim == head_dim and k.sm == sm]
         if len(kernels) > 0:

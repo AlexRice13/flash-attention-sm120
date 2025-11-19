@@ -18,6 +18,7 @@
 #include "mainloop_bwd_sm90_tma_gmma_ws.hpp"
 #include "mainloop_bwd_sm80.hpp"
 #include "epilogue_bwd.hpp"
+#include "flash_bwd_kernel_sm120.h"
 #include "flash_bwd_kernel_sm90.h"
 #include "flash_bwd_kernel_sm80.h"
 
@@ -32,6 +33,7 @@ template <int Arch, int kHeadDim, int kBlockM, int kBlockN, typename Element,
 void run_flash_bwd(Flash_bwd_params &params, cudaStream_t stream) {
     static_assert(!(Is_causal && Is_local), "Is_causal and Is_local cannot be true at the same time.");
     using ElementAccum = float;
+    // SM120 (Blackwell) uses Sm90 ArchTag as it shares the same ISA features (TMA, GMMA, etc.)
     using ArchTag = std::conditional_t<Arch >= 90, cutlass::arch::Sm90, cutlass::arch::Sm80>;
 
     int const total_q_padded_rounded = cute::round_up(params.total_q + params.b * kBlockM, kBlockM);
@@ -98,10 +100,15 @@ void run_flash_bwd(Flash_bwd_params &params, cudaStream_t stream) {
         flash::SingleTileBwdLPTScheduler<Varlen, kBlockN, Is_causal && Deterministic /*SPT*/>,
         flash::SingleTileScheduler<Varlen, false /*Split*/, false /*PackGQA*/, kBlockN>
     >;
+    // SM120 (Blackwell) uses dedicated backward kernel with Blackwell-specific tuning
     using AttnKernel = std::conditional_t<
-        Arch >= 90,
-        flash::enable_sm90_or_later<flash::FlashAttnBwdSm90<CollectiveMainloop, CollectiveEpilogue, Scheduler>>,
-        flash::enable_sm80_to_sm89<flash::FlashAttnBwdSm80<CollectiveMainloop, CollectiveEpilogue, Scheduler>>
+        Arch >= 120,
+        flash::enable_sm120_or_later<flash::FlashAttnBwdSm120<CollectiveMainloop, CollectiveEpilogue, Scheduler>>,
+        std::conditional_t<
+            Arch >= 90,
+            flash::enable_sm90_or_later<flash::FlashAttnBwdSm90<CollectiveMainloop, CollectiveEpilogue, Scheduler>>,
+            flash::enable_sm80_to_sm89<flash::FlashAttnBwdSm80<CollectiveMainloop, CollectiveEpilogue, Scheduler>>
+        >
     >;
 
     typename CollectiveMainloop::Arguments mainloop_args {

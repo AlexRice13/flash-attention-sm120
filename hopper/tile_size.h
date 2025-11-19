@@ -6,6 +6,50 @@
 
 #include <tuple>
 
+// Tuned for SM120 (Blackwell) based on NVIDIA whitebook: smaller shared memory per SM,
+// FP4 acceleration present, similar ISA to Hopper with TMA, GMMA, tensor cores.
+// Return {kBlockM, kBlockN, MmaPV_is_RS, IntraWGOverlap}
+constexpr std::tuple<int, int, bool, bool> tile_size_fwd_sm120(
+        int headdim, int headdim_v, bool is_causal, bool is_local, int element_size=2,
+        bool v_colmajor=false, bool paged_kv_non_TMA=false, bool softcap=false) {
+    // SM120 has smaller shared memory than Hopper, so we reduce tile sizes slightly
+    // while maintaining high occupancy and tensor core utilization
+    if (element_size == 2) {
+        if (headdim <= 64) {
+            if (headdim_v == 512) {
+                return {64, 64, false, false};
+            } else if (headdim_v == 256) {
+                return {128, 80, true, false};  // Reduced from 96 for smaller SMEM
+            } else {
+                // Reduced tile sizes for smaller SMEM on SM120
+                bool const use_blockN_128 = is_causal || is_local || paged_kv_non_TMA;
+                return {160, use_blockN_128 ? 128 : 160, use_blockN_128, true};  // Reduced from 192
+            }
+        } else if (headdim <= 96) {
+            return {160, is_local || paged_kv_non_TMA ? 112 : 128, false, true};  // Reduced from 192
+        } else if (headdim <= 128) {
+            bool const use_blockN_128 = is_causal || is_local || paged_kv_non_TMA;
+            return {128, use_blockN_128 ? 112 : 160, true, true};  // Slightly reduced from SM90
+        } else if (headdim <= 192) {
+            return {128, paged_kv_non_TMA || is_local ? 80 : (headdim_v <= 128 ? 112 : 96), true, true};  // Reduced
+        } else {
+            return {128, is_local ? 64 : 64, true, true};  // More conservative for SM120
+        }
+    } else {  // FP8 or other lower precision
+        if (headdim <= 64) {
+            return {160, 144, true, true};  // Reduced from 192 x 160
+        } else if (headdim <= 96) {
+            return {160, 112, true, true};  // Reduced from 192 x 128
+        } else if (headdim <= 128) {
+            return {128, paged_kv_non_TMA ? 144 : (v_colmajor || (softcap && is_local) ? 160 : 192), true, true};  // Slightly reduced
+        } else if (headdim <= 192) {
+            return {128, (paged_kv_non_TMA || softcap) && is_local ? 112 : 144, true, true};  // Reduced
+        } else {
+            return {128, is_local ? 64 : 112, true, !paged_kv_non_TMA};
+        }
+    }
+}
+
 // Return {kBlockM, kBlockN, MmaPV_is_RS, IntraWGOverlap}
 constexpr std::tuple<int, int, bool, bool> tile_size_fwd_sm90(
         int headdim, int headdim_v, bool is_causal, bool is_local, int element_size=2,

@@ -156,6 +156,9 @@ def _write_ninja_file(path,
         flags.append(f'cuda_post_cflags_sm80_sm90 = {" ".join(cuda_post_cflags_sm80_sm90)}')
         cuda_post_cflags_sm100 = [s if s != 'arch=compute_90a,code=sm_90a' else 'arch=compute_100a,code=sm_100a' for s in cuda_post_cflags]
         flags.append(f'cuda_post_cflags_sm100 = {" ".join(cuda_post_cflags_sm100)}')
+        # SM120 (Blackwell) - compile with compute_120 if supported by CUDA toolkit
+        cuda_post_cflags_sm120 = [s if s != 'arch=compute_90a,code=sm_90a' else 'arch=compute_120,code=sm_120' for s in cuda_post_cflags]
+        flags.append(f'cuda_post_cflags_sm120 = {" ".join(cuda_post_cflags_sm120)}')
     flags.append(f'cuda_dlink_post_cflags = {" ".join(cuda_dlink_post_cflags)}')
     flags.append(f'ldflags = {" ".join(ldflags)}')
 
@@ -196,6 +199,9 @@ def _write_ninja_file(path,
         cuda_compile_rule_sm100 = ['rule cuda_compile_sm100'] + cuda_compile_rule[1:] + [
             f'  command = $nvcc_from_env {nvcc_gendeps} $cuda_cflags -c $in -o $out $cuda_post_cflags_sm100'
         ]
+        cuda_compile_rule_sm120 = ['rule cuda_compile_sm120'] + cuda_compile_rule[1:] + [
+            f'  command = $nvcc_from_env {nvcc_gendeps} $cuda_cflags -c $in -o $out $cuda_post_cflags_sm120'
+        ]
         cuda_compile_rule.append(
             f'  command = $nvcc_from_env {nvcc_gendeps} $cuda_cflags -c $in -o $out $cuda_post_cflags')
 
@@ -210,6 +216,8 @@ def _write_ninja_file(path,
                 rule = 'cuda_compile_sm80'
             elif source_file.endswith('_sm100.cu'):
                 rule = 'cuda_compile_sm100'
+            elif source_file.endswith('_sm120.cu'):
+                rule = 'cuda_compile_sm120'
             else:
                 rule = 'cuda_compile_sm80_sm90'
         else:
@@ -256,6 +264,7 @@ def _write_ninja_file(path,
         blocks.append(cuda_compile_rule_sm80)  # type: ignore[possibly-undefined]
         blocks.append(cuda_compile_rule_sm80_sm90)  # type: ignore[possibly-undefined]
         blocks.append(cuda_compile_rule_sm100)  # type: ignore[possibly-undefined]
+        blocks.append(cuda_compile_rule_sm120)  # type: ignore[possibly-undefined]
     blocks += [devlink_rule, link_rule, build, devlink, link, default]
     content = "\n\n".join("\n".join(b) for b in blocks)
     # Ninja requires a new lines at the end of the .ninja file
@@ -530,9 +539,26 @@ if not SKIP_CUDA_BUILD:
                         for hdim, dtype, softcap in itertools.product(HEAD_DIMENSIONS_BWD, DTYPE_BWD, SOFTCAP)]
     sources_bwd_sm90 = [f"instantiations/flash_bwd_hdim{hdim}_{dtype}{softcap}_sm90.cu"
                         for hdim, dtype, softcap in itertools.product(HEAD_DIMENSIONS_BWD, DTYPE_BWD, SOFTCAP_ALL)]
+    
+    # SM120 (Blackwell) sources - same pattern as SM90
+    sources_fwd_sm120 = [f"instantiations/flash_fwd_hdim{hdim}_{dtype}{paged}{split}{softcap}{packgqa}_sm120.cu"
+                         for hdim, dtype, split, paged, softcap, packgqa in itertools.product(HEAD_DIMENSIONS_FWD, DTYPE_FWD_SM90, SPLIT, PAGEDKV, SOFTCAP, PACKGQA)
+                         if not (packgqa and (paged or split))]
+    if not DISABLE_HDIMDIFF64:
+        sources_fwd_sm120 += [f"instantiations/flash_fwd_hdim{hdim}_{dtype}{paged}{split}{softcap}{packgqa}_sm120.cu"
+                              for hdim, dtype, split, paged, softcap, packgqa in itertools.product(HEAD_DIMENSIONS_DIFF64_FWD, HALF_DTYPE_FWD_SM90, SPLIT, PAGEDKV, SOFTCAP, PACKGQA)
+                              if not (packgqa and (paged or split))]
+    if not DISABLE_HDIMDIFF192:
+        sources_fwd_sm120 += [f"instantiations/flash_fwd_hdim{hdim}_{dtype}{paged}{split}{softcap}{packgqa}_sm120.cu"
+                              for hdim, dtype, split, paged, softcap, packgqa in itertools.product(HEAD_DIMENSIONS_DIFF192_FWD, DTYPE_FWD_SM90, SPLIT, PAGEDKV, SOFTCAP, PACKGQA)
+                              if not (packgqa and (paged or split))]
+    sources_bwd_sm120 = [f"instantiations/flash_bwd_hdim{hdim}_{dtype}{softcap}_sm120.cu"
+                         for hdim, dtype, softcap in itertools.product(HEAD_DIMENSIONS_BWD, DTYPE_BWD, SOFTCAP_ALL)]
+    
     if DISABLE_BACKWARD:
         sources_bwd_sm90 = []
         sources_bwd_sm80 = []
+        sources_bwd_sm120 = []
     
     # Choose between flash_api.cpp and flash_api_stable.cpp based on torch version
     torch_version = parse(torch.__version__)
@@ -547,8 +573,8 @@ if not SKIP_CUDA_BUILD:
 
     sources = (
         [flash_api_source]
-        + (sources_fwd_sm80 if not DISABLE_SM8x else []) + sources_fwd_sm90
-        + (sources_bwd_sm80 if not DISABLE_SM8x else []) + sources_bwd_sm90
+        + (sources_fwd_sm80 if not DISABLE_SM8x else []) + sources_fwd_sm90 + sources_fwd_sm120
+        + (sources_bwd_sm80 if not DISABLE_SM8x else []) + sources_bwd_sm90 + sources_bwd_sm120
     )
     if not DISABLE_SPLIT:
         sources += ["flash_fwd_combine.cu"]

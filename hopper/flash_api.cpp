@@ -259,7 +259,8 @@ void run_mha_fwd_constexpr(Flash_fwd_params &params, cudaStream_t stream) {
             #ifndef FLASHATTENTION_DISABLE_HDIM64
             if (params.d <= 64) {
                 #ifndef FLASHATTENTION_DISABLE_HDIMDIFF64
-                if constexpr (Arch == 90) {
+                // SM120 (Blackwell) and SM90 (Hopper) support different head dimensions
+                if constexpr (Arch == 90 || Arch == 120) {
                     if (params.dv > 256) {
                         return run_mha_fwd_<Arch, cutlass::bfloat16_t, 64, 512, Split, PagedKVNonTMA, Has_softcap, PackGQA>(params, stream);
                     } else if (params.dv > 64) {
@@ -279,7 +280,7 @@ void run_mha_fwd_constexpr(Flash_fwd_params &params, cudaStream_t stream) {
             #ifndef FLASHATTENTION_DISABLE_HDIM192
             if (params.d <= 192) {
                 #ifndef FLASHATTENTION_DISABLE_HDIMDIFF192
-                if constexpr (Arch == 90) {
+                if constexpr (Arch == 90 || Arch == 120) {
                     if (params.dv <= 128) {
                         return run_mha_fwd_<Arch, cutlass::bfloat16_t, 192, 128, Split, PagedKVNonTMA, Has_softcap, PackGQA>(params, stream);
                     }
@@ -296,7 +297,7 @@ void run_mha_fwd_constexpr(Flash_fwd_params &params, cudaStream_t stream) {
             #ifndef FLASHATTENTION_DISABLE_HDIM64
             if (params.d <= 64) {
                 #ifndef FLASHATTENTION_DISABLE_HDIMDIFF64
-                if constexpr (Arch == 90) {
+                if constexpr (Arch == 90 || Arch == 120) {
                     if (params.dv > 256) {
                         return run_mha_fwd_<Arch, cutlass::half_t, 64, 512, Split, PagedKVNonTMA, Has_softcap, PackGQA>(params, stream);
                     } else if (params.dv > 64) {
@@ -316,7 +317,7 @@ void run_mha_fwd_constexpr(Flash_fwd_params &params, cudaStream_t stream) {
             #ifndef FLASHATTENTION_DISABLE_HDIM192
             if (params.d <= 192) {
                 #ifndef FLASHATTENTION_DISABLE_HDIMDIFF192
-                if constexpr (Arch == 90) {
+                if constexpr (Arch == 90 || Arch == 120) {
                     if (params.dv <= 128) {
                         return run_mha_fwd_<Arch, cutlass::half_t, 192, 128, Split, PagedKVNonTMA, Has_softcap, PackGQA>(params, stream);
                     }
@@ -346,7 +347,7 @@ void run_mha_fwd_constexpr(Flash_fwd_params &params, cudaStream_t stream) {
         #ifndef FLASHATTENTION_DISABLE_HDIM192
         if (params.d <= 192) {
             #ifndef FLASHATTENTION_DISABLE_HDIMDIFF192
-            if constexpr (Arch == 90) {
+            if constexpr (Arch == 90 || Arch == 120) {
                 if (params.dv <= 128) {
                     return run_mha_fwd_<90, cutlass::float_e4m3_t, 192, 128, Split, PagedKVNonTMA, Has_softcap, PackGQA>(params, stream);
                 }
@@ -710,6 +711,8 @@ mha_fwd(at::Tensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seql
     auto dprops = at::cuda::getCurrentDeviceProperties();
     bool is_sm8x = dprops->major >= 8;
     TORCH_CHECK(is_sm8x, "FlashAttention only supports Ampere GPUs or newer.");
+    // SM120 (Blackwell) is now supported
+    bool is_sm120 = dprops->major == 12;
 
     auto q_type = q.scalar_type();
     TORCH_CHECK(q_type == at::ScalarType::Half || q_type == at::ScalarType::BFloat16 || q_type == at::ScalarType::Float8_e4m3fn,
@@ -784,7 +787,7 @@ mha_fwd(at::Tensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seql
                    (head_size <= 64 && head_size_v <= 512),
                    "If V headdim is different from Q/K dim, we only support Q/K headdim in (128, 192] and V headdim in (96, 128], "
                    "or (Q/K <= 64 and V <= 512).");
-        TORCH_CHECK(dprops->major == 9, "Only Hopper supports different V headdim");
+        TORCH_CHECK(dprops->major >= 9, "Only Hopper and Blackwell support different V headdim");
         if (head_size_v > 256) {
             TORCH_CHECK(q_type == at::ScalarType::Half || q_type == at::ScalarType::BFloat16,
                         "HeaddimV > 256 requires fp16 and bf16 data type");
